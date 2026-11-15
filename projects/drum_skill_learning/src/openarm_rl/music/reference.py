@@ -94,7 +94,7 @@ class TransferPlanner:
 
 
 class PerformanceReference:
-    def __init__(self, model, metadata, score, profiles, speed=.6, planner=None):
+    def __init__(self, model, metadata, score, profiles, speed=.6, planner=None, velocity_calibration=None):
         self.model, self.score = model, score
         self.surfaces = {surface["name"]: surface for surface in metadata["scene"]["surfaces"]}
         self.controller = HoldController(model, metadata["robot"])
@@ -103,21 +103,28 @@ class PerformanceReference:
         for target, arms in available.items():
             if not arms:
                 raise ValueError(f"No calibrated reachable hand for {target}")
+        # Without a velocity calibration every note uses the bank stroke at `speed`, as before.
+        self.nominal, self.velocity_calibration = references, velocity_calibration
+        self.banks = {key: SpeedConditionedReference(p["reference_bank"]) for key, p in self.profiles.items()}
+        self.selected_strokes, self.stroke_speeds = {}, {}
         self.planner = planner or TransferPlanner(model, self.controller, list(self.profiles.values()))
-        self.preroll = max(reference.impact_time for reference in references.values()) + .20
-        self.assignment = self._assign(available, references)
+        # Blended strokes interpolate impact times, so the bank entries bound every selectable stroke.
+        candidates = (references.values() if velocity_calibration is None
+                      else [stroke for bank in self.banks.values() for stroke in bank.references])
+        self.preroll = max(reference.impact_time for reference in candidates) + .20
+        self.assignment = self._assign(available)
         self.initial = np.zeros(14)
         for arm in self.lanes:
             goals = [g for g in score.goals if self.assignment[g.event_id] == arm]
             if goals:
                 selected = slice(0, 7) if arm == "left" else slice(7, 14)
-                self.initial[selected] = references[(goals[0].target, arm)].positions[0, selected]
+                self.initial[selected] = self.stroke(goals[0], arm).positions[0, selected]
         state = self.initial.copy()
         for arm in self.lanes:
             selected = slice(0, 7) if arm == "left" else slice(7, 14)
             previous_end = 0.
             for goal in [g for g in score.goals if self.assignment[g.event_id] == arm]:
-                reference = references[(goal.target, arm)]
+                reference = self.stroke(goal, arm)
                 start = goal.time_s + self.preroll - reference.impact_time
                 if start < previous_end - 1e-8:
                     raise ScoreFeasibilityError(f"Infeasible {arm} score at {goal.time_s:.3f}s: prior stroke ends at score time {previous_end-self.preroll:.3f}s",
@@ -140,7 +147,22 @@ class PerformanceReference:
         self.duration = max(max(stroke["end"] for stroke in self.strokes), self.score.duration_s+self.preroll) + SETTLE_TAIL_S
         self._validate()
 
-    def _assign(self, available, references):
+    def stroke(self, goal, arm):
+        """Stroke for one note. With a velocity calibration, the note's MIDI velocity selects an
+        impact speed (clamped to the calibrated range and the bank's speed range) from the bank."""
+        key = (goal.target, arm)
+        if self.velocity_calibration is None:
+            return self.nominal[key]
+        bank, curve = self.banks[key], self.velocity_calibration.curves[goal.target]
+        velocity = float(np.clip(goal.velocity, curve[0, 1], curve[-1, 1]))
+        speed = float(np.clip(self.velocity_calibration.speed(goal.target, velocity), bank.speeds[0], bank.speeds[-1]))
+        self.stroke_speeds[goal.event_id] = speed
+        cache = (key, round(speed, 4))
+        if cache not in self.selected_strokes:
+            self.selected_strokes[cache] = bank.at(speed)
+        return self.selected_strokes[cache]
+
+    def _assign(self, available):
         beam = [(0., {}, {"left": (None, 0.), "right": (None, 0.)})]
         costs = {}
         goals = sorted(self.score.goals, key=lambda g: (g.time_s, len(available[g.target])))
@@ -148,7 +170,7 @@ class PerformanceReference:
             next_beam = []
             for cost, assignments, hands in beam:
                 for arm in available[goal.target]:
-                    reference = references[(goal.target, arm)]
+                    reference = self.stroke(goal, arm)
                     previous, end = hands[arm]
                     start = goal.time_s+self.preroll-reference.impact_time
                     if start < end-1e-8:
@@ -159,7 +181,8 @@ class PerformanceReference:
                         if key not in costs:
                             selected = slice(0, 7) if arm == "left" else slice(7, 14)
                             initial, ready = np.zeros(14), np.zeros(14)
-                            initial[selected] = references[(previous, arm)].positions[-1, selected]
+                            # Every stroke in a bank shares its ready pose, so transfers do not depend on speed.
+                            initial[selected] = self.nominal[(previous, arm)].positions[-1, selected]
                             ready[selected] = reference.positions[0, selected]
                             motion = self._transfer(initial, ready, arm, goal)
                             costs[key] = float(motion.ends[-1])
@@ -241,4 +264,5 @@ class PerformanceReference:
     def document(self):
         return {"schema": "openarm.performance_reference.v1", "score": self.score.document(), "preroll_s": self.preroll,
                 "duration_s": self.duration, "event_assignments": self.assignment,
+                "event_stroke_speeds_m_s": self.stroke_speeds,
                 "profiles": {f"{target}.{arm}": profile for (target, arm), profile in self.profiles.items()}}

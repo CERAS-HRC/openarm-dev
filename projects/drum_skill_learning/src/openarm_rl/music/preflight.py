@@ -11,12 +11,13 @@ from openarm_sim.compute_guard import budgeted
 
 from ..paths import PROJECT_ROOT
 from ..skills.registry import SKILLS
+from .feedback import VelocityCalibration
 from .reference import PerformanceReference, ScoreFeasibilityError
 from .score import ContactScore
 
 
 def inspect_performance(midi_file: Path, scene_directory: Path, profiles: Path,
-                        mapping: Path | None = None, tempo_scale: float = 1.) -> dict:
+                        mapping: Path | None = None, tempo_scale: float = 1., velocity_calibration: Path | None = None) -> dict:
     if not np.isfinite(tempo_scale) or tempo_scale <= 0:
         raise ValueError("Tempo scale must be positive and finite")
     mapping = PROJECT_ROOT/"configs/music/percussion.json" if mapping is None else Path(mapping)
@@ -54,7 +55,9 @@ def inspect_performance(midi_file: Path, scene_directory: Path, profiles: Path,
     score = ContactScore.read(midi_file, mapping, tempo_scale)
     model = mujoco.MjModel.from_binary_path(str(Path(scene_directory)/"model.mjb"))
     try:
-        reference = PerformanceReference(model, metadata, score, profiles)
+        # With a calibration, schedule the same velocity-selected strokes the performance will play.
+        calibration = VelocityCalibration(velocity_calibration) if velocity_calibration else None
+        reference = PerformanceReference(model, metadata, score, profiles, velocity_calibration=calibration)
     except ScoreFeasibilityError as error:
         report["issues"].append({"reason": "trajectory_infeasible", "time_s": error.time_s,
             "target": error.target, "arm": error.arm, "detail": str(error)})
