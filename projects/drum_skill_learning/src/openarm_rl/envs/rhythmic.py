@@ -65,7 +65,8 @@ class RhythmicDrummingEnv(gym.Env):
         self.velocity_calibration = VelocityCalibration(velocity_calibration) if velocity_calibration else None
         if self.velocity_calibration and any(goal.target not in self.velocity_calibration.curves for goal in self.score.goals):
             raise ValueError("Every score drum requires measured velocity calibration")
-        self.reference = PerformanceReference(self.model, self.scene, self.score, profiles)
+        self.reference = PerformanceReference(self.model, self.scene, self.score, profiles,
+                                              velocity_calibration=self.velocity_calibration)
         if not self.score_only and any(len(stroke["reference"].active_joints) != 1 for stroke in self.reference.strokes):
             raise ValueError("Full-arm MIDI references require --score-only joint command execution")
         self.controller = self.reference.controller

@@ -76,7 +76,8 @@ def rollout(env, output, seed=800000, command=None, video=False, reset_options=N
                 controller="native_reference_teacher" if command is None else "learned_actor",
                 controller_label=controller_label,
                 policy_uses_reference_trajectory=command is None or not env.score_only,
-                intensity_control="fixed_nominal_reference_speed" if command is None else "learned_actor",
+                intensity_control=("learned_actor" if command is not None else "velocity_selected_reference_strokes"
+                                   if env.reference.velocity_calibration else "fixed_nominal_reference_speed"),
                 intensity_feedback="measured_speed_to_midi_calibration" if env.velocity_calibration else "intensity_reward_disabled")
     if video:
         if contact_audio:
@@ -152,7 +153,8 @@ def main():
             backing = [{"target": "kick", "time_s": row["time_s"], "midi_velocity": row["velocity"]}
                        for row in arrangement["dropped"] if row["reason"] == "foot_event"]
         print(json.dumps({key: value for key, value in arrangement.items() if key not in ("kept", "dropped")}), flush=True)
-    preflight = inspect_performance(midi, args.scene_directory, args.profiles, args.mapping, args.tempo_scale)
+    preflight = inspect_performance(midi, args.scene_directory, args.profiles, args.mapping, args.tempo_scale,
+                                    velocity_calibration=args.velocity_calibration)
     (args.output/"preflight.json").write_text(json.dumps(preflight, indent=2))
     if not preflight["executable"]:
         raise RuntimeError(f"MIDI cannot be scheduled; inspect {args.output/'preflight.json'}")
