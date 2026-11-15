@@ -67,7 +67,7 @@ def tuned_stroke(ready, arm, impact, lift, depth, downstroke) -> dict:
     pose = np.zeros(14)
     pose[slice(0, 7) if arm == "left" else slice(7, 14)] = ready
     top, approach, bottom = pose.copy(), pose.copy(), pose.copy()
-    top[wrist], approach[wrist], bottom[wrist] = impact+sign*lift, impact+sign*.4*lift, impact-sign*depth
+    top[wrist], approach[wrist], bottom[wrist] = impact+sign*lift, impact+sign*.6*lift, impact-sign*depth
     crossing = (impact-approach[wrist])/(bottom[wrist]-approach[wrist])
     fraction = brentq(lambda x: x*x*(3-2*x)-crossing, 0, 1)
     times = np.cumsum([0, .10, .20, downstroke, .01, .28, .40])

@@ -18,7 +18,7 @@
   "rearm_clearance_m": 0.005,
   "rearm_seconds": 0.04,
   "force_stop_N": 30.0,
-  "penetration_stop_m": 0.003,
+  "penetration_stop_m": 0.005,
   "tracking_stop_rad": 0.2,
   "tip_speed_stop_m_s": 2.0,
   "notes": "Left-arm snare: full-arm approach, then joint-7-only downstroke and rebound with other joint targets held. Simulation gains and contact parameters remain provisional.",

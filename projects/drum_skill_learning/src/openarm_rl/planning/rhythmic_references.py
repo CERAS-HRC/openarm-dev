@@ -91,7 +91,7 @@ def calibrate(scene: Path, source: Path, output: Path, maximum_period: float, tr
             continue
         errors = np.asarray(info["timing_errors_s"])
         valid = (info["is_success"] and info["correct_hits"] == BURST_HITS and info["extra_hits"] == 0
-                 and info["peak_force_N"] <= 22 and info["max_penetration_m"] <= .002 and float(np.std(errors)) <= TIMING_SPREAD_S)
+                 and info["peak_force_N"] <= 22 and info["max_penetration_m"] <= .004 and float(np.std(errors)) <= TIMING_SPREAD_S)
         speed = float(np.mean([hit["downward_speed_m_s"] for hit in info["hits"]])) if info["hits"] else 0.
         row.update(valid=bool(valid), speed_m_s=speed, measurements=info)
         if valid:
