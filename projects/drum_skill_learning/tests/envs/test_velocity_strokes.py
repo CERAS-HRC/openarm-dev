@@ -59,3 +59,36 @@ def test_preflight_schedules_the_velocity_selected_strokes(velocity_score):
     report = inspect_performance(velocity_score["midi_file"], velocity_score["scene_directory"],
                                  velocity_score["profiles"], velocity_calibration=velocity_score["calibration"])
     assert report["executable"], report["issues"]
+
+
+def test_measured_bank_below_nominal_speed_plays_distinct_hits(rhythm_options, tmp_path, monkeypatch):
+    from openarm_rl.music.corpus import write_segment
+    from openarm_rl.planning import rhythmic_references
+
+    # Probe three downstroke timings on the same physical snare pose.
+    monkeypatch.setattr(rhythmic_references, "STROKE_PROBES",
+                        [(.03, .05, .01, scale) for scale in (.65, 1., 1.6)])
+    scene = Path(rhythm_options["scene_directory"])
+    profiles = tmp_path / "profiles"
+    profiles.mkdir()
+    rhythmic_references.calibrate(scene, Path(rhythm_options["profiles"]) / "snare.json",
+                                  tmp_path, .5, 2., 8.)
+    bank = json.loads((profiles / "snare.json").read_text())["reference_bank"]
+    soft, middle, loud = bank["speeds_m_s"]
+    assert bank["calibration_speed_m_s"] == [soft, middle, loud]
+    assert 0 < soft < middle < loud < .6
+
+    curve = tmp_path / "sim-scale.json"
+    curve.write_text(json.dumps({"schema": "openarm.drum_velocity_calibration.v1",
+                                 "measurement_source": "simulation test scale",
+                                 "drums": {"snare": [[soft, 1], [middle, 64], [loud, 127]]}}))
+    midi = tmp_path / "sweep.mid"
+    write_segment(midi, [{"time_s": .5 + i, "note": 38, "velocity": v}
+                         for i, v in enumerate((1, 64, 127))], 0., 1.)
+    with RhythmicDrummingEnv(scene, profiles, midi, velocity_calibration=curve, score_only=True) as env:
+        env.reset(seed=2026)
+        while env.active:
+            _, _, _, _, info = env.step(env.reference_action())
+    assert info["is_success"] and info["correct_hits"] == 3 and info["extra_hits"] == 0
+    measured = [hit["downward_speed_m_s"] for hit in info["hits"]]
+    assert measured == pytest.approx([soft, middle, loud], abs=.025)

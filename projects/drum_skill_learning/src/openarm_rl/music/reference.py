@@ -55,7 +55,10 @@ def load_strokes(metadata, profiles, targets, speed=.6):
                 raise ValueError(f"Duplicate hand-to-drum profile: {key}")
             loaded[key] = profile
             available[target].append(profile["arm"])
-    references = {key: SpeedConditionedReference(p["reference_bank"]).at(speed) for key, p in loaded.items()}
+    references = {}
+    for key, profile in loaded.items():
+        bank = SpeedConditionedReference(profile["reference_bank"])
+        references[key] = bank.at(np.clip(speed, bank.speeds[0], bank.speeds[-1]))
     return loaded, references, available
 
 

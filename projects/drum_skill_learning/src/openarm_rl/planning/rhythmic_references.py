@@ -18,7 +18,10 @@ from ..paths import PROJECT_ROOT
 
 
 STROKE_GRID = tuple(product((.03, .05, .08), (.05, .07, .10), (.01, .03)))
-BANK_SPEEDS = (.35, .45, .6, .75, .85)
+# Keep the timing search and probe softer/faster downstrokes at its shortest cycle.
+STROKE_PROBES = tuple((*timing, 1.) for timing in STROKE_GRID) + tuple(
+    (.03, .05, .01, scale) for scale in (.65, .8, 1.25, 1.6, 2.)
+)
 PERFORMANCE_SPEED = .6
 BURST_HITS = 8
 SPEED_BAND = .05
@@ -38,14 +41,17 @@ def shared_ready(candidates: list[dict], speed: float) -> list[dict]:
     return [row for row in candidates if row["reference"]["positions_rad"][0] == anchor]
 
 
-def compact_reference(reference: JointReference, approach: float, retract: float, settle: float) -> JointReference:
+def compact_reference(reference: JointReference, approach: float, retract: float, settle: float, downstroke_scale: float = 1.) -> JointReference:
     if len(reference.times) != 7:
         raise ValueError("Rhythmic compaction requires a seven-knot calibrated wrist stroke")
     downstroke, hold = np.diff(reference.times)[2:4]
-    times = np.cumsum([0., approach, downstroke, hold, retract, settle])
+    times = np.cumsum([0., approach, downstroke * downstroke_scale, hold, retract, settle])
+    # Only the descent is retimed. Contact can lag the commanded bottom.
+    impact = reference.impact_time - reference.times[2]
+    impact += np.clip(impact, 0., downstroke) * (downstroke_scale - 1.)
     return JointReference(times, reference.positions[1:], reference.wrist,
-        approach+reference.impact_time-reference.times[2], reference.contact_multiplier,
-        reference.compliance_seconds, reference.velocities[1:])
+        approach + impact, reference.contact_multiplier,
+        reference.compliance_seconds, reference.velocities[1:], reference.active_joints)
 
 
 def measure_burst(scene: Path, profiles: Path, midi: Path) -> dict:
@@ -71,8 +77,8 @@ def calibrate(scene: Path, source: Path, output: Path, maximum_period: float, tr
     midi = directory/"probe.mid"
     unique = {json.dumps(row, sort_keys=True): row for row in profile["reference_bank"]["references"]}
     measurements, candidates = [], []
-    for document, (approach, retract, settle) in product(unique.values(), STROKE_GRID):
-        reference = compact_reference(JointReference.load(document), approach, retract, settle)
+    for document, (approach, retract, settle, scale) in product(unique.values(), STROKE_PROBES):
+        reference = compact_reference(JointReference.load(document), approach, retract, settle, scale)
         if reference.duration > maximum_period+1e-8:
             continue
         check_resources()
@@ -83,7 +89,7 @@ def calibrate(scene: Path, source: Path, output: Path, maximum_period: float, tr
         # A repeated burst qualifies the period; one isolated stroke cannot show rearming or residual motion.
         period = reference.duration+.002
         write_segment(midi, [{"time_s": .5+index*period, "note": note, "velocity": 96} for index in range(BURST_HITS)], 0., 1.)
-        row = {"approach_s": approach, "retract_s": retract, "settle_s": settle, "duration_s": reference.duration}
+        row = {"downstroke_scale": scale, "approach_s": approach, "retract_s": retract, "settle_s": settle, "duration_s": reference.duration}
         try:
             info = measure_burst(scene, probe_profiles, midi)
         except ScoreFeasibilityError as error:
@@ -105,8 +111,15 @@ def calibrate(scene: Path, source: Path, output: Path, maximum_period: float, tr
         print(json.dumps(result), flush=True)
         return result
     bank = shared_ready(candidates, PERFORMANCE_SPEED)
-    selected = [select_stroke(bank, speed) for speed in BANK_SPEEDS]
-    profile["reference_bank"] = {"schema": "openarm.speed_conditioned_strike.v1", "speeds_m_s": list(BANK_SPEEDS),
+    # Index by observed impact speed. A single qualified stroke represents one operating point.
+    ordered = sorted(bank, key=lambda row: (row["speed_m_s"], row["duration_s"]))
+    targets = np.linspace(ordered[0]["speed_m_s"], ordered[-1]["speed_m_s"], 5)
+    selected = []
+    for speed in targets:
+        nearest = min(ordered, key=lambda row: abs(row["speed_m_s"] - speed))
+        if not selected or nearest["speed_m_s"] > selected[-1]["speed_m_s"]:
+            selected.append(nearest)
+    profile["reference_bank"] = {"schema": "openarm.speed_conditioned_strike.v1", "speeds_m_s": [row["speed_m_s"] for row in selected],
         "references": [row["reference"] for row in selected], "calibration_seed": 271828,
         "calibration_speed_m_s": [row["speed_m_s"] for row in selected],
         "repeat_period_s": [row["duration_s"]+.002 for row in selected]}
